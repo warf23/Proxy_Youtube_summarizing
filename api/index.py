@@ -8,6 +8,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import re
 import logging
 import requests
+import random
 
 # Load environment variables
 load_dotenv()
@@ -36,16 +37,27 @@ class TranscriptRequest(BaseModel):
 language_codes = {'English': 'en', 'Arabic': 'ar', 'Spanish': 'es', 'French': 'fr', 'German': 'de', 
               'Italian': 'it', 'Portuguese': 'pt', 'Chinese': 'zh', 'Japanese': 'ja', 'Korean': 'ko'}
 
-# Webshare proxy configuration
-PROXY_HOST = os.getenv("PROXY_HOST")
-PROXY_PORT = os.getenv("PROXY_PORT")
-PROXY_USER = os.getenv("PROXY_USER")
-PROXY_PASS = os.getenv("PROXY_PASS")
+# List of proxies
+PROXY_LIST = [
+  "38.154.227.167:5868:ltfazxrm:y69z38mzjh2y",
+  "45.127.248.127:5128:ltfazxrm:y69z38mzjh2y",
+  "207.244.217.165:6712:ltfazxrm:y69z38mzjh2y",
+  "64.64.118.149:6732:ltfazxrm:y69z38mzjh2y",
+  "167.160.180.203:6754:ltfazxrm:y69z38mzjh2y",
+  "104.239.105.125:6655:ltfazxrm:y69z38mzjh2y",
+  "198.105.101.92:5721:ltfazxrm:y69z38mzjh2y",
+  "154.36.110.199:6853:ltfazxrm:y69z38mzjh2y",
+  "204.44.69.89:6342:ltfazxrm:y69z38mzjh2y",
+  "206.41.172.74:6634:ltfazxrm:y69z38mzjh2y"
+]
 
-proxies = {
-  "http": f"socks5://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}",
-  "https": f"socks5://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
-}
+def get_random_proxy():
+  proxy = random.choice(PROXY_LIST)
+  host, port, user, password = proxy.split(':')
+  return {
+      "http": f"socks5://{user}:{password}@{host}:{port}",
+      "https": f"socks5://{user}:{password}@{host}:{port}"
+  }
 
 @app.get("/api")   
 def read_root():
@@ -53,6 +65,7 @@ def read_root():
 
 def get_youtube_transcript(video_id, language='en'):
   try:
+      proxies = get_random_proxy()
       transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[language], proxies=proxies)
       return " ".join([entry['text'] for entry in transcript])
   except Exception as e:
@@ -93,8 +106,3 @@ async def get_transcript(request: TranscriptRequest):
   
   except Exception as e:
       raise HTTPException(status_code=500, detail=str(e))
-
-# Run with Uvicorn
-if __name__ == "__main__":
-  import uvicorn
-  uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
