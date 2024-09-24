@@ -33,13 +33,9 @@ app.add_middleware(
   allow_headers=["*"],
 )
 
-# Define request body models
-class TranscriptRequest(BaseModel):
-  url: str
-  language: str = "English"
-
+# Define request body model
 class SummarizeRequest(BaseModel):
-  text: str
+  url: str
   language: str = "English"
 
 # Language options
@@ -98,43 +94,7 @@ def get_youtube_video_id(url):
       return video_id_match.group(1)
   return None
 
-@app.post("/api/transcript")
-async def get_transcript(request: TranscriptRequest):
-  url = request.url
-  language = request.language
-
-  # Validate input
-  if not validators.url(url):
-      raise HTTPException(status_code=400, detail="Invalid URL")
-
-  if language not in language_codes:
-      raise HTTPException(status_code=400, detail="Invalid language")
-
-  try:
-      if "youtube.com" in url or "youtu.be" in url:
-          video_id = get_youtube_video_id(url)
-          if video_id:
-              content = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
-              if content:
-                  return {"transcript": content}
-              else:
-                  raise HTTPException(status_code=404, detail="Transcript not found")
-          else:
-              raise HTTPException(status_code=400, detail="Invalid YouTube URL")
-      else:
-          raise HTTPException(status_code=400, detail="URL is not a YouTube link")
-  
-  except Exception as e:
-      raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/summarize")
-async def summarize_with_groq(request: SummarizeRequest):
-  text = request.text
-  language = request.language
-
-  if language not in language_codes:
-      raise HTTPException(status_code=400, detail="Invalid language")
-
+def summarize_with_groq(text, language):
   try:
       groq_api_key = os.getenv("GROQ_API_KEY")
       if not groq_api_key:
@@ -149,9 +109,39 @@ async def summarize_with_groq(request: SummarizeRequest):
       chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
       summary = chain.run(input_documents=docs, language=language)
 
-      return {"summary": summary}
+      return summary
   except Exception as e:
       logger.error(f"Error summarizing content: {str(e)}")
+      raise
+
+@app.post("/api/summarize")
+async def get_transcript_and_summarize(request: SummarizeRequest):
+  url = request.url
+  language = request.language
+
+  # Validate input
+  if not validators.url(url):
+      raise HTTPException(status_code=400, detail="Invalid URL")
+
+  if language not in language_codes:
+      raise HTTPException(status_code=400, detail="Invalid language")
+
+  try:
+      if "youtube.com" in url or "youtu.be" in url:
+          video_id = get_youtube_video_id(url)
+          if video_id:
+              transcript = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
+              if transcript:
+                  summary = summarize_with_groq(transcript, language)
+                  return {"transcript": transcript, "summary": summary}
+              else:
+                  raise HTTPException(status_code=404, detail="Transcript not found")
+          else:
+              raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+      else:
+          raise HTTPException(status_code=400, detail="URL is not a YouTube link")
+  
+  except Exception as e:
       raise HTTPException(status_code=500, detail=str(e))
 
 # Run with Uvicorn
