@@ -1,0 +1,11 @@
+youtube-transcript-api
+fastapi
+uvicorn
+pydantic
+langchain
+langchain-groq
+langchain-community
+validators
+pytube
+unstructured
+requests[socks]
