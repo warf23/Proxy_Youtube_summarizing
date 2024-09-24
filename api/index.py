@@ -9,6 +9,11 @@ import re
 import logging
 import requests
 import random
+from langchain_groq import ChatGroq
+from langchain.chains.summarize import load_summarize_chain
+from langchain.docstore.document import Document
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.prompts import PromptTemplate
 
 # Load environment variables
 load_dotenv()
@@ -51,6 +56,17 @@ PROXY_LIST = [
   "206.41.172.74:6634:ltfazxrm:y69z38mzjh2y"
 ]
 
+# Define the prompt template
+prompt_template = PromptTemplate(
+  input_variables=["text", "language"],
+  template="""
+Please provide a concise and informative summary in the language {language} of the following content. The summary should be approximately 300 words and should highlight the main points, key arguments, and any significant conclusions or insights presented in the content. Ensure that the summary is clear and easy to understand for someone who has not accessed the original content.
+
+Content:
+{text}
+"""
+)
+
 def get_random_proxy():
   proxy = random.choice(PROXY_LIST)
   host, port, user, password = proxy.split(':')
@@ -78,8 +94,28 @@ def get_youtube_video_id(url):
       return video_id_match.group(1)
   return None
 
+def summarize_with_groq(content, language):
+  try:
+      groq_api_key = os.getenv("GROQ_API_KEY")
+      if not groq_api_key:
+          raise ValueError("Groq API key not found in environment variables")
+
+      llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-70b-versatile")
+
+      text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+      texts = text_splitter.split_text(content)
+      docs = [Document(page_content=t) for t in texts]
+
+      chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
+      summary = chain.run(input_documents=docs, language=language)
+
+      return summary
+  except Exception as e:
+      logger.error(f"Error summarizing content: {str(e)}")
+      raise
+
 @app.post("/api/transcript")
-async def get_transcript(request: TranscriptRequest):
+async def get_transcript_and_summarize(request: TranscriptRequest):
   url = request.url
   language = request.language
 
@@ -96,7 +132,8 @@ async def get_transcript(request: TranscriptRequest):
           if video_id:
               content = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
               if content:
-                  return {"transcript": content}
+                  summary = summarize_with_groq(content, language)
+                  return {"transcript": content, "summary": summary}
               else:
                   raise HTTPException(status_code=404, detail="Transcript not found")
           else:
@@ -106,3 +143,8 @@ async def get_transcript(request: TranscriptRequest):
   
   except Exception as e:
       raise HTTPException(status_code=500, detail=str(e))
+
+# Run with Uvicorn
+if __name__ == "__main__":
+  import uvicorn
+  uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
