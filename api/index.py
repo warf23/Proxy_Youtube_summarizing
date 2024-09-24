@@ -130,7 +130,7 @@ async def summarize(request: SummarizeRequest):
 
       # Summarize the content
       chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
-      summary = chain.invoke(input_documents=docs, language=language)
+      summary = chain.run(input_documents=docs, language=language)
 
       return {"summary": summary}
   
