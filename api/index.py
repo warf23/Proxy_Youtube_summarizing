@@ -2,11 +2,6 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from langchain.prompts import PromptTemplate
-from langchain_groq import ChatGroq
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.chains.summarize import load_summarize_chain
-from langchain.docstore.document import Document
 import validators
 from fastapi.middleware.cors import CORSMiddleware
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -33,20 +28,9 @@ app.add_middleware(
 )
 
 # Define a request body model
-class SummarizeRequest(BaseModel):
+class TranscriptRequest(BaseModel):
   url: str
   language: str = "English"
-
-# Define the prompt template
-prompt_template = PromptTemplate(
-  input_variables=["text", "language"],
-  template="""
-Please provide a concise and informative summary in the language {language} of the following content. The summary should be approximately 300 words and should highlight the main points, key arguments, and any significant conclusions or insights presented in the content. Ensure that the summary is clear and easy to understand for someone who has not accessed the original content.
-
-Content:
-{text}
-"""
-)
 
 # Language options
 language_codes = {'English': 'en', 'Arabic': 'ar', 'Spanish': 'es', 'French': 'fr', 'German': 'de', 
@@ -81,24 +65,8 @@ def get_youtube_video_id(url):
       return video_id_match.group(1)
   return None
 
-def load_url_content(url, language):
-  try:
-      if "youtube.com" in url or "youtu.be" in url:
-          video_id = get_youtube_video_id(url)
-          if video_id:
-              content = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
-              if content:
-                  return content
-      
-      response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies)
-      response.raise_for_status()
-      return response.text
-  except Exception as e:
-      logger.error(f"Error loading URL content: {str(e)}")
-      raise HTTPException(status_code=500, detail=f"Error loading URL content: {str(e)}")
-
-@app.post("/api/summarize")
-async def summarize(request: SummarizeRequest):
+@app.post("/api/transcript")
+async def get_transcript(request: TranscriptRequest):
   url = request.url
   language = request.language
 
@@ -110,34 +78,18 @@ async def summarize(request: SummarizeRequest):
       raise HTTPException(status_code=400, detail="Invalid language")
 
   try:
-      # Get the API key from environment variable
-      groq_api_key = os.getenv("GROQ_API_KEY")
-      if not groq_api_key:
-          raise HTTPException(status_code=500, detail="OpenAI API key not found in environment variables")
-
-      # Initialize the language model
-      llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-70b-versatile")
-
-      # Load the URL content 
-      content = load_url_content(url, language)
-
-      # Split the content into chunks
-      text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-      texts = text_splitter.split_text(content)
-
-      # Create Document objects
-      docs = [Document(page_content=t) for t in texts]
-
-      # Summarize the content
-      chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
-      summary = chain.run(input_documents=docs, language=language)
-
-      return {"summary": summary}
+      if "youtube.com" in url or "youtu.be" in url:
+          video_id = get_youtube_video_id(url)
+          if video_id:
+              content = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
+              if content:
+                  return {"transcript": content}
+              else:
+                  raise HTTPException(status_code=404, detail="Transcript not found")
+          else:
+              raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+      else:
+          raise HTTPException(status_code=400, detail="URL is not a YouTube link")
   
   except Exception as e:
       raise HTTPException(status_code=500, detail=str(e))
-
-# # Run with Uvicorn
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
