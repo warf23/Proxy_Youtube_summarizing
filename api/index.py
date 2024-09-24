@@ -33,9 +33,13 @@ app.add_middleware(
   allow_headers=["*"],
 )
 
-# Define a request body model
+# Define request body models
 class TranscriptRequest(BaseModel):
   url: str
+  language: str = "English"
+
+class SummarizeRequest(BaseModel):
+  text: str
   language: str = "English"
 
 # Language options
@@ -94,28 +98,8 @@ def get_youtube_video_id(url):
       return video_id_match.group(1)
   return None
 
-def summarize_with_groq(content, language):
-  try:
-      groq_api_key = os.getenv("GROQ_API_KEY")
-      if not groq_api_key:
-          raise ValueError("Groq API key not found in environment variables")
-
-      llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-70b-versatile")
-
-      text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-      texts = text_splitter.split_text(content)
-      docs = [Document(page_content=t) for t in texts]
-
-      chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
-      summary = chain.run(input_documents=docs, language=language)
-
-      return summary
-  except Exception as e:
-      logger.error(f"Error summarizing content: {str(e)}")
-      raise
-
 @app.post("/api/transcript")
-async def get_transcript_and_summarize(request: TranscriptRequest):
+async def get_transcript(request: TranscriptRequest):
   url = request.url
   language = request.language
 
@@ -132,8 +116,7 @@ async def get_transcript_and_summarize(request: TranscriptRequest):
           if video_id:
               content = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
               if content:
-                  summary = summarize_with_groq(content, language)
-                  return {"transcript": content, "summary": summary}
+                  return {"transcript": content}
               else:
                   raise HTTPException(status_code=404, detail="Transcript not found")
           else:
@@ -142,6 +125,33 @@ async def get_transcript_and_summarize(request: TranscriptRequest):
           raise HTTPException(status_code=400, detail="URL is not a YouTube link")
   
   except Exception as e:
+      raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/summarize")
+async def summarize_with_groq(request: SummarizeRequest):
+  text = request.text
+  language = request.language
+
+  if language not in language_codes:
+      raise HTTPException(status_code=400, detail="Invalid language")
+
+  try:
+      groq_api_key = os.getenv("GROQ_API_KEY")
+      if not groq_api_key:
+          raise ValueError("Groq API key not found in environment variables")
+
+      llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-70b-versatile")
+
+      text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+      texts = text_splitter.split_text(text)
+      docs = [Document(page_content=t) for t in texts]
+
+      chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
+      summary = chain.run(input_documents=docs, language=language)
+
+      return {"summary": summary}
+  except Exception as e:
+      logger.error(f"Error summarizing content: {str(e)}")
       raise HTTPException(status_code=500, detail=str(e))
 
 # Run with Uvicorn
