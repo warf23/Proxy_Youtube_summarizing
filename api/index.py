@@ -53,7 +53,7 @@ def read_root():
 
 def get_youtube_transcript(video_id, language='en'):
   try:
-      transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
+      transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[language], proxies=proxies)
       return " ".join([entry['text'] for entry in transcript])
   except Exception as e:
       logger.error(f"Error fetching YouTube transcript: {str(e)}")
@@ -93,3 +93,8 @@ async def get_transcript(request: TranscriptRequest):
   
   except Exception as e:
       raise HTTPException(status_code=500, detail=str(e))
+
+# Run with Uvicorn
+if __name__ == "__main__":
+  import uvicorn
+  uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
