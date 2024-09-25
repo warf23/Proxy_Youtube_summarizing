@@ -7,13 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from youtube_transcript_api import YouTubeTranscriptApi
 import re
 import logging
-import requests
 import random
 from langchain_groq import ChatGroq
 from langchain.chains.summarize import load_summarize_chain
 from langchain.docstore.document import Document
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.prompts import PromptTemplate
+from langchain_community.document_loaders import UnstructuredURLLoader
 
 # Load environment variables
 load_dotenv()
@@ -40,7 +40,7 @@ class SummarizeRequest(BaseModel):
 
 # Language options
 language_codes = {'English': 'en', 'Arabic': 'ar', 'Spanish': 'es', 'French': 'fr', 'German': 'de', 
-              'Italian': 'it', 'Portuguese': 'pt', 'Chinese': 'zh', 'Japanese': 'ja', 'Korean': 'ko'}
+                'Italian': 'it', 'Portuguese': 'pt', 'Chinese': 'zh', 'Japanese': 'ja', 'Korean': 'ko'}
 
 # List of proxies
 PROXY_LIST = [
@@ -94,17 +94,30 @@ def get_youtube_video_id(url):
       return video_id_match.group(1)
   return None
 
-def summarize_with_groq(text, language):
+def Url_website(url):
+  loader = UnstructuredURLLoader(
+      urls=[url], ssl_verify=False, headers={"User-Agent": "Mozilla/5.0"}
+  )
+  documents = loader.load()
+  return " ".join([doc.page_content for doc in documents])
+
+def summarize_with_groq(content, language):
   try:
       groq_api_key = os.getenv("GROQ_API_KEY")
       if not groq_api_key:
           raise ValueError("Groq API key not found in environment variables")
 
-      llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-70b-versatile")
+      llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma-7b-it")
 
       text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-      texts = text_splitter.split_text(text)
-      docs = [Document(page_content=t) for t in texts]
+      
+      if isinstance(content, str):
+          texts = text_splitter.split_text(content)
+          docs = [Document(page_content=t) for t in texts]
+      elif isinstance(content, list) and all(isinstance(doc, Document) for doc in content):
+          docs = content
+      else:
+          raise ValueError("Invalid content type. Expected string or list of Documents.")
 
       chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt_template)
       summary = chain.run(input_documents=docs, language=language)
@@ -133,15 +146,18 @@ async def get_transcript_and_summarize(request: SummarizeRequest):
               transcript = get_youtube_transcript(video_id, language_codes.get(language, 'en'))
               if transcript:
                   summary = summarize_with_groq(transcript, language)
-                  return {"transcript": transcript, "summary": summary}
+                  return {"summary": summary}
               else:
                   raise HTTPException(status_code=404, detail="Transcript not found")
           else:
               raise HTTPException(status_code=400, detail="Invalid YouTube URL")
       else:
-          raise HTTPException(status_code=400, detail="URL is not a YouTube link")
+          text = Url_website(url)
+          summary = summarize_with_groq(text, language)
+          return {"summary": summary}
   
   except Exception as e:
+      logger.error(f"Error in get_transcript_and_summarize: {str(e)}")
       raise HTTPException(status_code=500, detail=str(e))
 
 # Run with Uvicorn
