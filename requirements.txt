@@ -9,3 +9,4 @@ validators
 pytube
 unstructured
 requests[socks]
+beautifulsoup4
