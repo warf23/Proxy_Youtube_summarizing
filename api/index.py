@@ -1,32 +1,25 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, HttpUrl
+import requests
+from bs4 import BeautifulSoup
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
+from langchain.prompts import PromptTemplate
 from langchain_groq import ChatGroq
-from langchain.chains import create_extraction_chain 
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_community.document_loaders import YoutubeLoader, UnstructuredURLLoader
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-import validators
-from fastapi.middleware.cors import CORSMiddleware
+from langchain.chains.summarize import load_summarize_chain
 
-# FastAPI app instance
 app = FastAPI()
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+class UrlInput(BaseModel):
+  url: HttpUrl
+  groq_api_key: str
+  language: str
 
-# Define a request body model
-class SummarizeRequest(BaseModel):
-    groq_api_key: str
-    url: str
-    language: str = "English"
+# Language options
+language_codes = {
+  'English': 'en', 'Arabic': 'ar', 'Spanish': 'es', 'French': 'fr', 'German': 'de',
+  'Italian': 'it', 'Portuguese': 'pt', 'Chinese': 'zh', 'Japanese': 'ja', 'Korean': 'ko'
+}
 
 # Define the prompt template
 prompt_template = """
@@ -64,189 +57,62 @@ Formatting:
 - Employ bullet points or numbered lists for clarity when presenting multiple related points.
 - Include subheadings if it enhances readability and organization.
 
-
 Note: Ensure the summary stands alone as an informative piece, providing value even without access to the original content.
 """
+
 prompt = PromptTemplate(template=prompt_template, input_variables=["text", "language"])
 
-# Language options
-language_codes = {'English': 'en', 'Arabic': 'ar', 'Spanish': 'es', 'French': 'fr', 'German': 'de', 
-                'Italian': 'it', 'Portuguese': 'pt', 'Chinese': 'zh', 'Japanese': 'ja', 'Korean': 'ko'}
+def fetch_webpage(url: str) -> BeautifulSoup:
+  try:
+      response = requests.get(url)
+      response.raise_for_status()
+      return BeautifulSoup(response.content, 'html.parser')
+  except requests.RequestException as e:
+      raise HTTPException(status_code=400, detail=f"Error fetching the webpage: {str(e)}")
 
-@app.post("/summarize")
-async def summarize(request: SummarizeRequest):
-    groq_api_key = request.groq_api_key
-    url = request.url
-    language = request.language
+def extract_key_info(soup: BeautifulSoup) -> dict:
+  for element in soup(['header', 'footer', 'nav', 'aside']):
+      element.decompose()
 
-    # Validate input
-    if not validators.url(url):
-        raise HTTPException(status_code=400, detail="Invalid URL")
+  paragraphs = [p.text.strip() for p in soup.find_all('p') if p.text.strip()]
+  headings = [h.text.strip() for h in soup.find_all(['h1', 'h2', 'h3']) if h.text.strip()]
 
-    if language not in language_codes:
-        raise HTTPException(status_code=400, detail="Invalid language")
+  return {
+      'paragraphs': paragraphs,
+      'headings': headings
+  }
 
-    try:
-        # Initialize the language model
-        model = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.2-90b-text-preview")
+def create_documents(extracted_info: dict) -> list:
+  text_splitter = RecursiveCharacterTextSplitter(
+      chunk_size=1000,
+      chunk_overlap=200,
+      length_function=len,
+  )
 
-        # Load the URL content
-        if "youtube.com" in url:
-            loader = YoutubeLoader.from_youtube_url(url, language=language_codes[language], add_video_info=True)
-        else:
-            loader = UnstructuredURLLoader(
-                urls=[url], ssl_verify=False, headers={"User-Agent": "Mozilla/5.0"}
-            )
+  all_text = "\n\n".join(extracted_info['headings'] + extracted_info['paragraphs'])
+  chunks = text_splitter.split_text(all_text)
+  documents = [Document(page_content=chunk) for chunk in chunks]
 
-        docs = loader.load()
+  return documents
 
-        # Combine the documents
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        texts = text_splitter.split_documents(docs)
-        combined_text = " ".join([doc.page_content for doc in texts])
+@app.post("/extract_and_summarize")
+async def extract_and_summarize(url_input: UrlInput):
+  soup = fetch_webpage(url_input.url)
+  extracted_info = extract_key_info(soup)
+  documents = create_documents(extracted_info)
 
-        # Create the chain
-        chain = (
-            {"text": RunnablePassthrough(), "language": lambda _: language}
-            | prompt
-            | model
-            | StrOutputParser()
-        )
+  # Initialize the language model
+  model = ChatGroq(groq_api_key=url_input.groq_api_key, model_name="llama-3.2-90b-text-preview")
+  chain = load_summarize_chain(model, chain_type="stuff", prompt=prompt)
 
-        # Run the chain
-        output = chain.invoke(combined_text)
+  # Generate summary
+  summary = chain.run(input_documents=documents, language=url_input.language)
 
-        return {"summary": output}
+  return {
+      "num_documents": len(documents),
+      "summary": summary
+  }
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error occurred: {str(e)}")
-
-
-# Update the request model
-class AdvancedSummarizeRequest(BaseModel):
-    groq_api_key: str
-    url: str
-    language: str = "English"
-    length: str = "Short"
-    expertise_level: str = "intermediate"
-    focus_area: str = "general"
-    include_formulas: bool = False
-
-# Update the prompt template
-advanced_prompt_template = """
-Content Summary Request
-
-Language: {language}
-Word Count: {length} words
-Source: {text}
-Expertise Level: {expertise_level}
-Focus Area: {focus_area}
-Include Formulas: {include_formulas}
-
-Objective:
-Provide a comprehensive summary of the given content in the specified language, tailored to the indicated expertise level and focus area. The summary should be approximately {length} words and accessible to readers familiar with the {expertise_level} level of {focus_area}.
-
-Key Focus Areas:
-1. Main points and central themes related to {focus_area}
-2. Key arguments and supporting evidence
-3. Significant conclusions or findings
-4. Notable insights or implications for {focus_area}
-5. Methodologies or techniques used (if applicable)
-
-Summary Guidelines:
-- Begin with a brief introduction contextualizing the content within {focus_area}.
-- Organize information logically, using clear transitions between ideas.
-- Prioritize information most relevant to {focus_area} and {expertise_level}.
-- Maintain objectivity, avoiding personal interpretations or biases.
-- Include relevant statistics, data points, or examples that substantiate main ideas.
-- Conclude with the overarching message or significance of the content for {focus_area}.
-
-Focus Area-Specific Guidelines:
-- Emphasize domain-specific concepts, methodologies, or frameworks relevant to {focus_area}.
-- Use terminology appropriate for the {expertise_level}, providing brief explanations if necessary.
-- If {include_formulas} is True and the content contains mathematical or scientific formulas:
-  * Include and highlight key formulas or equations.
-  * Explain the significance and application of these formulas within the context.
-  * Ensure formulas are clearly formatted and easy to read.
-  * the formula mustt be in latex 
-  * if physics include schemas 
-  * if the {focus_area} related to technologies or programing , give all the steps in organized way . with code formating  
-
-Formatting:
-- Use clear, concise language appropriate for the {expertise_level} in {focus_area}.
-- Employ bullet points or numbered lists for clarity when presenting multiple related points.
-- Include subheadings if it enhances readability and organization.
-- add mutiple color to enhance the visualization 
-
-Note: Ensure the summary stands alone as an informative piece, providing value even without access to the original content, while being specifically tailored to {focus_area} at an {expertise_level} level.
-"""
-
-advanced_prompt = PromptTemplate(
-    template=advanced_prompt_template, 
-    input_variables=["text", "language", "length", "expertise_level", "focus_area", "include_formulas"]
-)
-
-@app.post("/summarize/advanced")
-async def summarize_advanced(request: AdvancedSummarizeRequest):
-    groq_api_key = request.groq_api_key
-    url = request.url
-    language = request.language
-    length = request.length
-    expertise_level = request.expertise_level
-    focus_area = request.focus_area
-    include_formulas = request.include_formulas
-
-    # Validate input
-    if not validators.url(url):
-        raise HTTPException(status_code=400, detail="Invalid URL")
-
-    if language not in language_codes:
-        raise HTTPException(status_code=400, detail="Invalid language")
-
-    try:
-        # Initialize the language model
-        model = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.2-90b-text-preview")
-
-        # Load the URL content (same as in the original summarize function)
-        if "youtube.com" in url:
-            loader = YoutubeLoader.from_youtube_url(url, language=language_codes[language], add_video_info=True)
-        else:
-            loader = UnstructuredURLLoader(
-                urls=[url], ssl_verify=False, headers={"User-Agent": "Mozilla/5.0"} 
-            )
-
-        docs = loader.load()
-
-        # Combine the documents
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        texts = text_splitter.split_documents(docs)
-        combined_text = " ".join([doc.page_content for doc in texts])
-
-        # Create the chain
-        chain = (
-            {
-                "text": RunnablePassthrough(), 
-                "language": lambda _: language,
-                "length": lambda _: length,
-                "expertise_level": lambda _: expertise_level,
-                "focus_area": lambda _: focus_area,
-                "include_formulas": lambda _: str(include_formulas)
-            }
-            | advanced_prompt
-            | model
-            | StrOutputParser()
-        )
-
-        # Run the chain
-        output = chain.invoke(combined_text)
-
-        return {"summary": output}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error occurred: {str(e)}")
-
-
-# # Run with Uvicorn
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+if __name__ == "__main__":
+  import uvicorn
+  uvicorn.run(app, host="0.0.0.0", port=8000)
